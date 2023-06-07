@@ -1,100 +1,78 @@
-using Claims.Auditing;
+using Claims.Application.Exceptions;
+using Claims.Application.Requests.Claim;
+using Claims.Application.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Azure.Cosmos;
 
 namespace Claims.Controllers
 {
     [ApiController]
-    [Route("[controller]")]
+    [Route("api/[controller]/[action]")]
     public class ClaimsController : ControllerBase
     {
-        
-        private readonly ILogger<ClaimsController> _logger;
-        private readonly CosmosDbService _cosmosDbService;
-        private readonly Auditer _auditer;
+        private readonly IClaimService _claimService;
 
-        public ClaimsController(ILogger<ClaimsController> logger, CosmosDbService cosmosDbService, AuditContext auditContext)
+        public ClaimsController(IClaimService claimService)
         {
-            _logger = logger;
-            _cosmosDbService = cosmosDbService;
-            _auditer = new Auditer(auditContext);
+            _claimService = claimService;
         }
 
         [HttpGet]
-        public Task<IEnumerable<Claim>> GetAsync()
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<ActionResult> GetAllAsync()
         {
-            return _cosmosDbService.GetClaimsAsync();
+            var result = await _claimService.GetAllAsync();
+            return Ok(result);
         }
 
         [HttpPost]
-        public async Task<ActionResult> CreateAsync(Claim claim)
-        {
-            claim.Id = Guid.NewGuid().ToString();
-            await _cosmosDbService.AddItemAsync(claim);
-            _auditer.AuditClaim(claim.Id, "POST");
-            return Ok(claim);
-        }
-
-        [HttpDelete("{id}")]
-        public Task DeleteAsync(string id)
-        {
-            _auditer.AuditClaim(id, "DELETE");
-            return _cosmosDbService.DeleteItemAsync(id);
-        }
-
-        [HttpGet("{id}")]
-        public Task<Claim> GetAsync(string id)
-        {
-            return _cosmosDbService.GetClaimAsync(id);
-        }
-    }
-
-    public class CosmosDbService
-    {
-        private readonly Container _container;
-
-        public CosmosDbService(CosmosClient dbClient,
-            string databaseName,
-            string containerName)
-        {
-            if (dbClient == null) throw new ArgumentNullException(nameof(dbClient));
-            _container = dbClient.GetContainer(databaseName, containerName);
-        }
-
-        public async Task<IEnumerable<Claim>> GetClaimsAsync()
-        {
-            var query = _container.GetItemQueryIterator<Claim>(new QueryDefinition("SELECT * FROM c"));
-            var results = new List<Claim>();
-            while (query.HasMoreResults)
-            {
-                var response = await query.ReadNextAsync();
-
-                results.AddRange(response.ToList());
-            }
-            return results;
-        }
-
-        public async Task<Claim> GetClaimAsync(string id)
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<ActionResult> CreateAsync(CreateClaimRequest claim)
         {
             try
             {
-                var response = await _container.ReadItemAsync<Claim>(id, new PartitionKey(id));
-                return response.Resource;
+                var result = await _claimService.CreateAsync(claim);
+                return Ok(result);
             }
-            catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            catch(EntityNotFoundException ex)
             {
-                return null;
+                return BadRequest(ex.Message);
+            }
+            catch (InvalidDateException ex)
+            {
+                return BadRequest(ex.Message);
             }
         }
 
-        public Task AddItemAsync(Claim item)
+        [HttpDelete("{id}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<ActionResult> DeleteAsync(string id)
         {
-            return _container.CreateItemAsync(item, new PartitionKey(item.Id));
+            try
+            {
+                await _claimService.DeleteAsync(id);
+                return Ok();
+            }
+            catch (EntityNotFoundException ex)
+            {
+                return BadRequest(ex.Message);
+            }
         }
 
-        public Task DeleteItemAsync(string id)
+        [HttpGet("{id}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult> GetAsync(string id)
         {
-            return _container.DeleteItemAsync<Claim>(id, new PartitionKey(id));
+            var result = await _claimService.GetByIdAsync(id);
+            if(result == null)
+            {
+                return NotFound();
+            }
+            return Ok(result);
         }
     }
 }
